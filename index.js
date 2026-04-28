@@ -33,6 +33,15 @@ const verifyFBToken = async (req, res, next) => {
   }
 };
 
+// const verifyAdmin = async (req, res, next) => {
+//   const email = req.decodedToken.email;
+//   const user = await usersCollection.findOne({ email });
+//   if (user?.role !== "admin") {
+//     return res.status(403).send({ message: "Forbidden: Admins only" });
+//   }
+//   next();
+// };
+
 const uri = `mongodb+srv://${
   process.env.DB_USER
 }:${process.env.DB_PASSWORD}@cluster0.ypjumbw.mongodb.net/?appName=Cluster0`;
@@ -70,45 +79,92 @@ async function run() {
       res.send(result);
     });
 
-    app.get("/users", async (req, res) => {
-      const cursor = usersCollection.find();
-      const result = await cursor.toArray();
-      res.send(result);
-    });
+    app.get("/users", verifyFBToken, async (req, res) => {
+      const searchText = req.query.searchText;
+      let query = {};
 
-    app.patch("/users/:id", async (req, res) => {
-      const { id } = req.params;
-      const { role } = req.body;
-      const query = { _id: new ObjectId(id) };
-      const updateDoc = {
-        $set: {
-          role: role,
-        },
-      };
-      const result = await usersCollection.updateOne(query, updateDoc);
-      res.send(result);
-    });
-
-    app.get("/users/:email/role", async (req, res) => {
-      const email = req.params.email;
-      const { query } = email;
-      const user = await usersCollection.findOne(query);
-      if (!user) {
-        return res.status(404).send({ message: "User not found" });
+      if (searchText) {
+        query.$or = [
+          {
+            // 'i' makes it case-insensitive
+            // This allows matching "kam" if the name is "Kamrul"
+            name: { $regex: searchText, $options: "i" },
+          },
+          {
+            email: { $regex: searchText, $options: "i" },
+          },
+        ];
       }
-      res.send({ role: user.role || "member" }); // Default to "member" if role is not set
+
+      const result = await usersCollection
+        .find(query)
+        .sort({ createdAt: -1 })
+        .toArray();
+
+      res.send(result);
+    });
+
+    app.patch(
+      "/users/:id/role",
+      verifyFBToken,
+
+      async (req, res) => {
+        const { id } = req.params;
+        const { role } = req.body;
+        const query = { _id: new ObjectId(id) };
+        const updateDoc = {
+          $set: {
+            role: role,
+          },
+        };
+        const result = await usersCollection.updateOne(query, updateDoc);
+        res.send(result);
+      },
+    );
+
+    // Change the path order to match what your frontend is calling
+    app.get("/users/role/:email", async (req, res) => {
+      const email = req.params.email;
+
+      // Change this line to use a case-insensitive regex
+      const user = await usersCollection.findOne({
+        email: { $regex: `^${email}$`, $options: "i" },
+      });
+
+      if (!user) {
+        // If user isn't in DB yet, they are a member by default
+        return res.send({ role: "member" });
+      }
+
+      res.send({ role: user.role || "member" });
     });
     // club managers api
 
-    app.post("/club-managers", async (req, res) => {
+    app.post("/club-managers", verifyFBToken, async (req, res) => {
       const manager = req.body;
-      manager.status = "pending"; // Set default status to "pending"
-      manager.createdAt = new Date();
-      const result = await clubManagersCollection.insertOne(manager);
+      const email = manager.email;
+
+      // 1. Safety Check: Check if this user already applied
+      const existingRequest = await clubManagersCollection.findOne({ email });
+      if (existingRequest) {
+        return res.status(400).send({
+          message:
+            "You have already submitted an application. Please wait for admin review.",
+        });
+      }
+
+      // 2. Override status and add timestamp on server-side for security
+      const finalApplication = {
+        ...manager,
+        status: "pending", // Prevents users from sending "approved"
+        createdAt: new Date(),
+      };
+
+      const result = await clubManagersCollection.insertOne(finalApplication);
       res.send(result);
     });
 
-    app.get("/club-managers", async (req, res) => {
+    app.get("/club-managers", verifyFBToken, async (req, res) => {
       const query = {};
       if (req.query.status) {
         query.status = req.query.status;
@@ -147,7 +203,7 @@ async function run() {
 
       if (email) {
         // IMPORTANT: Use 'managerEmail' because that is what you stored in MongoDB
-        query = { managerEmail: email };
+        query = { managerEmail: { $regex: `^${email}$`, $options: "i" } };
       }
       const options = {
         sort: { createdAt: -1 }, // Sort by createdAt in descending order
