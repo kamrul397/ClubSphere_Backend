@@ -63,6 +63,7 @@ async function run() {
     const clubsCollection = db.collection("clubs");
     const usersCollection = db.collection("users");
     const clubManagersCollection = db.collection("clubManagers");
+    const clubMembersCollection = db.collection("clubMembers");
 
     // users api
     app.post("/users", async (req, res) => {
@@ -213,10 +214,143 @@ async function run() {
       res.send(result);
     });
 
-    app.post("/clubs", async (req, res) => {
+    // POST a new club (Initial Request)
+    app.post("/clubs", verifyFBToken, async (req, res) => {
       const newClub = req.body;
-      newClub.createdAt = new Date(); // Add a createdAt field with the current date and time
-      const result = await clubsCollection.insertOne(newClub);
+
+      // Security: Force status to pending and add timestamp
+      const finalClubData = {
+        ...newClub,
+        status: "pending",
+        createdAt: new Date(),
+      };
+
+      const result = await clubsCollection.insertOne(finalClubData);
+      res.send(result);
+    });
+    // Admin Route to Approve/Reject Club
+    app.patch("/clubs/:id/status", verifyFBToken, async (req, res) => {
+      const { id } = req.params;
+      const { status, managerEmail } = req.body; // status will be 'approved' or 'rejected'
+
+      const query = { _id: new ObjectId(id) };
+      const updateDoc = {
+        $set: { status: status },
+      };
+
+      const result = await clubsCollection.updateOne(query, updateDoc);
+
+      // // If approved, ensure the user has the manager role
+      // if (status === "approved" && managerEmail) {
+      //   const userQuery = { email: managerEmail };
+      //   const userUpdateDoc = {
+      //     $set: { role: "clubManager" },
+      //   };
+      //   await usersCollection.updateOne(userQuery, userUpdateDoc);
+      // }
+
+      res.send(result);
+    });
+    // Get only approved clubs that the user has NOT joined yet
+    app.get("/clubs/approved", verifyFBToken, async (req, res) => {
+      const { email } = req.query;
+      let query = { status: "approved" };
+
+      if (email) {
+        // 1. Find all club IDs the user has already joined
+        const joinedClubs = await clubMembersCollection
+          .find({ userEmail: email })
+          .project({ clubId: 1 })
+          .toArray();
+
+        // 2. Extract IDs into an array
+        const joinedIds = joinedClubs.map((c) => new ObjectId(c.clubId));
+
+        // 3. Filter the query to exclude these IDs
+        if (joinedIds.length > 0) {
+          query._id = { $nin: joinedIds };
+        }
+      }
+
+      const result = await clubsCollection.find(query).toArray();
+      res.send(result);
+    });
+    // Get a single club by ID
+    app.get("/clubs/:id", async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = await clubsCollection.findOne(query);
+      res.send(result);
+    });
+
+    // get club members by clubId
+    app.post("/club-members", verifyFBToken, async (req, res) => {
+      const memberInfo = req.body;
+      // memberInfo should include: clubId, clubName, userEmail, userName, fee, status
+      const result = await clubMembersCollection.insertOne(memberInfo);
+      res.send(result);
+    });
+
+    // Check if a specific user has already joined a specific club
+    app.get("/membership-check", verifyFBToken, async (req, res) => {
+      const email = req.query.email;
+      const clubId = req.query.clubId;
+      const query = { userEmail: email, clubId: clubId };
+      const membership = await clubMembersCollection.findOne(query);
+      res.send({ isMember: !!membership });
+    });
+    // Get all memberships for a specific user
+    app.get("/my-memberships/:email", verifyFBToken, async (req, res) => {
+      const email = req.params.email;
+      const memberships = await clubMembersCollection
+        .find({ userEmail: email })
+        .project({ clubId: 1 }) // Only fetch the clubId to keep it light
+        .toArray();
+      res.send(memberships.map((m) => m.clubId)); // Returns array of IDs: ["id1", "id2"]
+    });
+
+    // Get detailed club info for a member's dashboard
+    app.get("/my-joined-clubs/:email", verifyFBToken, async (req, res) => {
+      const email = req.params.email;
+
+      // 1. Find all membership records for this user
+      const memberships = await clubMembersCollection
+        .find({ userEmail: email })
+        .toArray();
+
+      if (memberships.length === 0) {
+        return res.send([]);
+      }
+
+      // 2. Extract the clubIds and convert to ObjectIds for querying
+      const clubIds = memberships.map((m) => new ObjectId(m.clubId));
+
+      // 3. Fetch full club details (name, banner, etc.) from the clubs collection
+      const joinedClubs = await clubsCollection
+        .find({ _id: { $in: clubIds } })
+        .toArray();
+
+      // 4. Merge membership-specific data (status, joinedDate) with club data
+      const result = joinedClubs.map((club) => {
+        const membershipInfo = memberships.find(
+          (m) => m.clubId === club._id.toString(),
+        );
+        return {
+          ...club,
+          membershipStatus: membershipInfo?.status,
+          joinedAt: membershipInfo?.joinedDate,
+        };
+      });
+
+      res.send(result);
+    });
+
+    // Leave a club (Remove membership)
+    app.delete("/leave-club", verifyFBToken, async (req, res) => {
+      const { email, clubId } = req.query;
+      const query = { userEmail: email, clubId: clubId };
+
+      const result = await clubMembersCollection.deleteOne(query);
       res.send(result);
     });
 
