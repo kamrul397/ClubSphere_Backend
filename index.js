@@ -64,6 +64,9 @@ async function run() {
     const usersCollection = db.collection("users");
     const clubManagersCollection = db.collection("clubManagers");
     const clubMembersCollection = db.collection("clubMembers");
+    const eventsCollection = db.collection("events");
+    // --- Event Registrations API ---
+    const eventRegistrationsCollection = db.collection("eventRegistrations");
 
     // users api
     app.post("/users", async (req, res) => {
@@ -354,6 +357,43 @@ async function run() {
       res.send(result);
     });
 
+    // Get all members for a specific club (For Managers)
+    app.get("/club-members/:clubId", verifyFBToken, async (req, res) => {
+      const { clubId } = req.params;
+      const query = { clubId: clubId };
+
+      // Sort by newest members first
+      const result = await clubMembersCollection
+        .find(query)
+        .sort({ joinedAt: -1 })
+        .toArray();
+
+      res.send(result);
+    });
+
+    // Add this under your other club routes
+    app.patch("/clubs/:id", verifyFBToken, async (req, res) => {
+      const { id } = req.params;
+      const updatedData = req.body;
+
+      // Clean the data to ensure _id isn't being updated
+      delete updatedData._id;
+
+      const query = { _id: new ObjectId(id) };
+      const updateDoc = {
+        $set: updatedData,
+      };
+
+      try {
+        const result = await clubsCollection.updateOne(query, updateDoc);
+        res.send(result);
+      } catch (error) {
+        res
+          .status(500)
+          .send({ message: "Failed to update club", error: error.message });
+      }
+    });
+
     // Delete a club by ID
     app.delete("/clubs/:id", async (req, res) => {
       try {
@@ -381,6 +421,187 @@ async function run() {
           .send({ message: "Internal Server Error", error: error.message });
       }
     });
+
+    // --- EVENTS API ---
+
+    app.post("/events", verifyFBToken, async (req, res) => {
+      const newEvent = req.body;
+
+      const finalEventData = {
+        ...newEvent, // ✅ includes clubId
+        createdAt: new Date(),
+      };
+
+      const result = await eventsCollection.insertOne(finalEventData);
+
+      res.send(result);
+    });
+
+    app.get("/events", verifyFBToken, async (req, res) => {
+      const { clubId } = req.query;
+
+      let query = {};
+
+      if (clubId) {
+        query = { clubId };
+      }
+
+      try {
+        const result = await eventsCollection
+          .find(query)
+          .sort({ eventDate: 1 })
+          .toArray();
+
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({
+          message: "Failed to fetch events",
+          error: error.message,
+        });
+      }
+    });
+
+    // Add this in server.js under the events section
+    app.put("/events/:id", verifyFBToken, async (req, res) => {
+      const { id } = req.params;
+      const updatedEvent = req.body;
+      delete updatedEvent._id; // Ensure we don't try to overwrite the ID
+
+      const query = { _id: new ObjectId(id) };
+      const updateDoc = { $set: updatedEvent };
+
+      const result = await eventsCollection.updateOne(query, updateDoc);
+      res.send(result);
+    });
+
+    app.get("/events/:id", verifyFBToken, async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = await eventsCollection.findOne(query);
+      res.send(result);
+    });
+
+    app.post("/event-registrations", verifyFBToken, async (req, res) => {
+      const registration = req.body;
+
+      // Optional: Check if already registered
+      const query = {
+        eventId: registration.eventId,
+        userEmail: registration.userEmail,
+      };
+      const existing = await eventRegistrationsCollection.findOne(query);
+
+      if (existing) {
+        return res
+          .status(400)
+          .send({ message: "You are already registered for this event!" });
+      }
+
+      const result = await eventRegistrationsCollection.insertOne(registration);
+      res.send(result);
+    });
+
+    // Add this in index.js inside your run() function
+    app.get("/event-registrations/check", verifyFBToken, async (req, res) => {
+      const { email, eventId } = req.query;
+      const query = { userEmail: email, eventId: eventId };
+      const result = await db.collection("eventRegistrations").findOne(query);
+      res.send(result); // Returns the doc if found, or null if not
+    });
+    app.delete("/event-registrations", verifyFBToken, async (req, res) => {
+      const { email, eventId } = req.query;
+
+      const query = {
+        userEmail: email,
+        eventId: eventId,
+      };
+
+      const result = await eventRegistrationsCollection.deleteOne(query);
+
+      res.send(result);
+    });
+
+    // Get ALL registrations for a specific event (to show the "Joined" count)
+    app.get("/event-registrations/:eventId", async (req, res) => {
+      const eventId = req.params.eventId;
+      const query = { eventId: eventId };
+      const result = await db
+        .collection("eventRegistrations")
+        .find(query)
+        .toArray();
+      res.send(result);
+    });
+    app.get("/my-registered-events/:email", verifyFBToken, async (req, res) => {
+      const email = req.params.email;
+
+      const registrations = await eventRegistrationsCollection
+        .find({ userEmail: email })
+        .toArray();
+
+      if (registrations.length === 0) return res.send([]);
+
+      const eventIds = registrations.map((r) => new ObjectId(r.eventId));
+
+      const events = await eventsCollection
+        .find({ _id: { $in: eventIds } })
+        .toArray();
+
+      res.send(events);
+    });
+    app.get(
+      "/event-registrations/:eventId",
+      verifyFBToken,
+      async (req, res) => {
+        const { eventId } = req.params;
+
+        const registrations = await eventRegistrationsCollection
+          .find({ eventId: eventId })
+          .toArray();
+
+        res.send(registrations);
+      },
+    );
+    // // 3. Delete an event
+    // app.delete("/events/:id", verifyFBToken, async (req, res) => {
+    //   const { id } = req.params;
+    //   const query = { _id: new ObjectId(id) };
+
+    //   const result = await eventsCollection.deleteOne(query);
+    //   res.send(result);
+    // });
+
+    // Get all events for the clubs a specific member has joined
+    app.get("/member-events/:email", verifyFBToken, async (req, res) => {
+      const email = req.params.email;
+
+      try {
+        // 1. Find all clubs the user has joined
+        const memberships = await db
+          .collection("clubMembers")
+          .find({ userEmail: email })
+          .toArray();
+
+        if (memberships.length === 0) {
+          return res.send([]); // Return empty if not joined any clubs
+        }
+
+        // 2. Extract the clubIds
+        const joinedClubIds = memberships.map((m) => m.clubId);
+
+        // 3. Find events that belong to any of these clubIds
+        const query = { clubId: { $in: joinedClubIds } };
+        const result = await db
+          .collection("events")
+          .find(query)
+          .sort({ eventDate: 1 }) // Sort by upcoming dates
+          .toArray();
+
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ message: "Error fetching member events" });
+      }
+    });
+
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
     console.log(
