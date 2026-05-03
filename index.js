@@ -19,19 +19,39 @@ app.use(express.json());
 
 const verifyFBToken = async (req, res, next) => {
   const token = req.headers.authorization;
+
   if (!token) {
     return res.status(401).send({ message: "Authorization token is required" });
   }
+
   try {
-    const idToken = token.split(" ")[1]; // Extract the token part after "Bearer"
+    const idToken = token.split(" ")[1];
     const decodedToken = await admin.auth().verifyIdToken(idToken);
-    // console.log("decoded token", decodedToken);
+
+    // important
+    req.decodedToken = decodedToken;
 
     next();
   } catch (error) {
     return res.status(401).send({ message: "Invalid or expired token" });
   }
 };
+
+// const verifyMember = async (req, res, next) => {
+//   const email = req.decodedToken.email;
+
+//   const user = await usersCollection.findOne({
+//     email: { $regex: `^${email}$`, $options: "i" },
+//   });
+
+//   if (user?.role !== "member") {
+//     return res.status(403).send({
+//       message: "Only members can perform this action.",
+//     });
+//   }
+
+//   next();
+// };
 
 // const verifyAdmin = async (req, res, next) => {
 //   const email = req.decodedToken.email;
@@ -68,19 +88,74 @@ async function run() {
     // --- Event Registrations API ---
     const eventRegistrationsCollection = db.collection("eventRegistrations");
 
+    const escapeRegExp = (string = "") => {
+      return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    };
+
+    const verifyAdmin = async (req, res, next) => {
+      try {
+        const email = req.decodedToken?.email;
+
+        if (!email) {
+          return res.status(401).send({ message: "Unauthorized" });
+        }
+
+        const user = await usersCollection.findOne({
+          email: { $regex: `^${escapeRegExp(email)}$`, $options: "i" },
+        });
+
+        if (user?.role !== "admin") {
+          return res.status(403).send({ message: "Forbidden: Admins only" });
+        }
+
+        next();
+      } catch (error) {
+        res.status(500).send({
+          message: "Failed to verify admin",
+          error: error.message,
+        });
+      }
+    };
+
     // users api
     app.post("/users", async (req, res) => {
-      const user = req.body;
-      const email = user.email;
-      const existingUser = await usersCollection.findOne({ email });
-      if (existingUser) {
-        return res.status(400).send({ message: "User already exists" });
-      }
+      try {
+        const user = req.body;
+        const email = user.email;
 
-      user.createdAt = new Date();
-      user.role = "member"; // Set default role to "user"
-      const result = await usersCollection.insertOne(user);
-      res.send(result);
+        if (!email) {
+          return res.status(400).send({ message: "Email is required" });
+        }
+
+        const existingUser = await usersCollection.findOne({
+          email: { $regex: `^${email}$`, $options: "i" },
+        });
+
+        if (existingUser) {
+          return res.send({
+            message: "User already exists",
+            existing: true,
+            insertedId: null,
+          });
+        }
+
+        const newUser = {
+          name: user.name,
+          email: user.email,
+          photoURL: user.photoURL || "",
+          role: "member",
+          createdAt: new Date(),
+          lastLogin: user.lastLogin || new Date(),
+        };
+
+        const result = await usersCollection.insertOne(newUser);
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({
+          message: "Failed to save user",
+          error: error.message,
+        });
+      }
     });
 
     app.patch("/users/profile/:email", verifyFBToken, async (req, res) => {
@@ -227,60 +302,284 @@ async function run() {
     // club managers api
 
     app.post("/club-managers", verifyFBToken, async (req, res) => {
-      const manager = req.body;
-      const email = manager.email;
+      try {
+        const manager = req.body;
+        const email = manager.email;
 
-      // 1. Safety Check: Check if this user already applied
-      const existingRequest = await clubManagersCollection.findOne({ email });
-      if (existingRequest) {
-        return res.status(400).send({
-          message:
-            "You have already submitted an application. Please wait for admin review.",
+        if (!email) {
+          return res.status(400).send({ message: "Email is required." });
+        }
+
+        if (req.decodedToken.email !== email) {
+          return res.status(403).send({
+            message: "You cannot submit an application for another user.",
+          });
+        }
+
+        const user = await usersCollection.findOne({
+          email: { $regex: `^${escapeRegExp(email)}$`, $options: "i" },
+        });
+
+        if (!user) {
+          return res.status(404).send({ message: "User not found." });
+        }
+
+        if (user.role !== "member") {
+          return res.status(403).send({
+            message: "Only members can apply to become Club Managers.",
+          });
+        }
+
+        const existingActiveRequest = await clubManagersCollection.findOne({
+          email: { $regex: `^${escapeRegExp(email)}$`, $options: "i" },
+          status: { $in: ["pending", "approved"] },
+        });
+
+        if (existingActiveRequest) {
+          return res.status(400).send({
+            message:
+              "You already have an active manager application. Please wait for admin review.",
+          });
+        }
+
+        const finalApplication = {
+          name: manager.name,
+          email: manager.email,
+          photoURL: manager.photoURL || "",
+          nid: manager.nid,
+          address: manager.address,
+          roleRequested: "clubManager",
+          status: "pending",
+          createdAt: new Date(),
+        };
+
+        const result = await clubManagersCollection.insertOne(finalApplication);
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({
+          message: "Failed to submit manager application",
+          error: error.message,
         });
       }
-
-      // 2. Override status and add timestamp on server-side for security
-      const finalApplication = {
-        ...manager,
-        status: "pending", // Prevents users from sending "approved"
-        createdAt: new Date(),
-      };
-
-      const result = await clubManagersCollection.insertOne(finalApplication);
-      res.send(result);
     });
+    app.get(
+      "/club-managers/my-application/:email",
+      verifyFBToken,
+      async (req, res) => {
+        try {
+          const email = req.params.email;
 
-    app.get("/club-managers", verifyFBToken, async (req, res) => {
-      const query = {};
-      if (req.query.status) {
-        query.status = req.query.status;
+          if (req.decodedToken.email !== email) {
+            return res.status(403).send({
+              message: "You cannot view another user's application.",
+            });
+          }
+
+          const application = await clubManagersCollection.findOne({
+            email: { $regex: `^${escapeRegExp(email)}$`, $options: "i" },
+            status: { $in: ["pending", "approved"] },
+          });
+
+          if (!application) {
+            return res.send({
+              hasApplication: false,
+              application: null,
+            });
+          }
+
+          res.send({
+            hasApplication: true,
+            application,
+          });
+        } catch (error) {
+          res.status(500).send({
+            message: "Failed to check manager application",
+            error: error.message,
+          });
+        }
+      },
+    );
+
+    app.get("/club-managers", verifyFBToken, verifyAdmin, async (req, res) => {
+      try {
+        const query = {};
+
+        if (req.query.status) {
+          query.status = req.query.status;
+        }
+
+        const result = await clubManagersCollection
+          .find(query)
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({
+          message: "Failed to fetch manager applications",
+          error: error.message,
+        });
       }
-      const result = await clubManagersCollection.find().toArray();
-      res.send(result);
     });
 
-    app.patch("/club-managers/:id", verifyFBToken, async (req, res) => {
-      const status = req.body.status;
-      const id = req.params.id;
-      const query = { _id: new ObjectId(id) };
-      const updateDoc = {
-        $set: {
-          status: status,
-        },
-      };
-      const result = await clubManagersCollection.updateOne(query, updateDoc);
-      if (status === "approved") {
-        const email = req.body.email;
-        const userQuery = { email: email };
-        const userUpdateDoc = {
-          $set: {
-            role: "clubManager",
-          },
-        };
-        await usersCollection.updateOne(userQuery, userUpdateDoc);
-      }
-      res.send(result);
-    });
+    app.patch(
+      "/club-managers/:id",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const { id } = req.params;
+          const { status, email } = req.body;
+
+          if (!ObjectId.isValid(id)) {
+            return res.status(400).send({ message: "Invalid application ID." });
+          }
+
+          if (!["approved", "rejected"].includes(status)) {
+            return res.status(400).send({ message: "Invalid status." });
+          }
+
+          const application = await clubManagersCollection.findOne({
+            _id: new ObjectId(id),
+          });
+
+          if (!application) {
+            return res.status(404).send({ message: "Application not found." });
+          }
+
+          if (application.status !== "pending") {
+            return res.status(400).send({
+              message: "Only pending applications can be approved or rejected.",
+            });
+          }
+
+          const applicantEmail = email || application.email;
+
+          // If admin rejects: delete request and keep user as member
+          if (status === "rejected") {
+            await usersCollection.updateOne(
+              {
+                email: {
+                  $regex: `^${escapeRegExp(applicantEmail)}$`,
+                  $options: "i",
+                },
+              },
+              {
+                $set: {
+                  role: "member",
+                  updatedAt: new Date(),
+                },
+              },
+            );
+
+            const deleteResult = await clubManagersCollection.deleteOne({
+              _id: new ObjectId(id),
+            });
+
+            return res.send({
+              ...deleteResult,
+              rejected: true,
+              message: "Application rejected and removed.",
+            });
+          }
+
+          // If admin approves: keep request as approved and make user clubManager
+          const result = await clubManagersCollection.updateOne(
+            { _id: new ObjectId(id) },
+            {
+              $set: {
+                status: "approved",
+                reviewedAt: new Date(),
+                reviewedBy: req.decodedToken.email,
+              },
+            },
+          );
+
+          await usersCollection.updateOne(
+            {
+              email: {
+                $regex: `^${escapeRegExp(applicantEmail)}$`,
+                $options: "i",
+              },
+            },
+            {
+              $set: {
+                role: "clubManager",
+                updatedAt: new Date(),
+              },
+            },
+          );
+
+          res.send(result);
+        } catch (error) {
+          res.status(500).send({
+            message: "Failed to update manager application",
+            error: error.message,
+          });
+        }
+      },
+    );
+    // app.post("/club-managers", verifyFBToken, async (req, res) => {
+    //   const manager = req.body;
+    //   const email = manager.email;
+
+    //   // 1. Safety Check: Check if this user already applied
+    //   const existingRequest = await clubManagersCollection.findOne({ email });
+    //   if (existingRequest) {
+    //     return res.status(400).send({
+    //       message:
+    //         "You have already submitted an application. Please wait for admin review.",
+    //     });
+    //   }
+
+    //   // 2. Override status and add timestamp on server-side for security
+    //   const finalApplication = {
+    //     ...manager,
+    //     status: "pending", // Prevents users from sending "approved"
+    //     createdAt: new Date(),
+    //   };
+
+    //   const result = await clubManagersCollection.insertOne(finalApplication);
+    //   res.send(result);
+    // });
+
+    // app.get("/club-managers", verifyFBToken, async (req, res) => {
+    //   const query = {};
+    //   if (req.query.status) {
+    //     query.status = req.query.status;
+    //   }
+    //   const result = await clubManagersCollection.find().toArray();
+    //   res.send(result);
+    // });
+
+    // app.patch("/club-managers/:id", verifyFBToken, async (req, res) => {
+    //   const status = req.body.status;
+    //   const id = req.params.id;
+    //   const query = { _id: new ObjectId(id) };
+    //   const updateDoc = {
+    //     $set: {
+    //       status: status,
+    //     },
+    //   };
+    //   const result = await clubManagersCollection.updateOne(query, updateDoc);
+    //   if (status === "approved") {
+    //     const email = req.body.email;
+    //     const userQuery = { email: email };
+    //     const userUpdateDoc = {
+    //       $set: {
+    //         role: "clubManager",
+    //       },
+    //     };
+    //     await usersCollection.updateOne(userQuery, userUpdateDoc);
+    //   }
+    //   res.send(result);
+    // });
+    // app.delete("/club-managers/:id", verifyFBToken, async (req, res) => {
+    //   const id = req.params.id;
+    //   const query = { _id: new ObjectId(id) };
+    //   const result = await clubManagersCollection.deleteOne(query);
+    //   res.send(result);
+    // });
 
     // clubs api
     app.get("/clubs", verifyFBToken, async (req, res) => {
@@ -474,13 +773,6 @@ async function run() {
           .status(500)
           .send({ message: "Failed to update club", error: error.message });
       }
-    });
-
-    app.delete("/club-managers/:id", verifyFBToken, async (req, res) => {
-      const id = req.params.id;
-      const query = { _id: new ObjectId(id) };
-      const result = await clubManagersCollection.deleteOne(query);
-      res.send(result);
     });
 
     // Delete a club by ID
