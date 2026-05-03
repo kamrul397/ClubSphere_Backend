@@ -83,6 +83,26 @@ async function run() {
       res.send(result);
     });
 
+    app.patch("/users/profile/:email", verifyFBToken, async (req, res) => {
+      const email = req.params.email;
+      const { name, photoURL } = req.body;
+
+      const query = {
+        email: { $regex: `^${email}$`, $options: "i" },
+      };
+
+      const updateDoc = {
+        $set: {
+          name,
+          photoURL,
+          updatedAt: new Date(),
+        },
+      };
+
+      const result = await usersCollection.updateOne(query, updateDoc);
+      res.send(result);
+    });
+
     app.get("/users", verifyFBToken, async (req, res) => {
       const searchText = req.query.searchText;
       let query = {};
@@ -126,6 +146,68 @@ async function run() {
       },
     );
 
+    // Public homepage stats
+    app.get("/home-stats", async (req, res) => {
+      try {
+        const startOfMonth = new Date();
+        startOfMonth.setDate(1);
+        startOfMonth.setHours(0, 0, 0, 0);
+
+        const totalClubs = await clubsCollection.countDocuments({
+          status: "approved",
+        });
+
+        const totalEvents = await eventsCollection.countDocuments();
+
+        const totalMembers = await clubMembersCollection.countDocuments({
+          status: "active",
+        });
+
+        const eventsThisMonth = await eventsCollection.countDocuments({
+          createdAt: { $gte: startOfMonth },
+        });
+
+        const membersThisMonth = await clubMembersCollection.countDocuments({
+          joinedDate: { $gte: startOfMonth.toISOString() },
+        });
+
+        const totalRegistrations =
+          await eventRegistrationsCollection.countDocuments();
+
+        const latestClub = await clubsCollection.findOne(
+          { status: "approved" },
+          { sort: { createdAt: -1 } },
+        );
+
+        const latestEvent = await eventsCollection.findOne(
+          {},
+          { sort: { createdAt: -1 } },
+        );
+
+        const latestEventJoined = latestEvent
+          ? await eventRegistrationsCollection.countDocuments({
+              eventId: latestEvent._id.toString(),
+            })
+          : 0;
+
+        res.send({
+          totalClubs,
+          totalEvents,
+          totalMembers,
+          eventsThisMonth,
+          membersThisMonth,
+          totalRegistrations,
+          latestClubName: latestClub?.clubName || "Featured Club",
+          latestEventTitle: latestEvent?.title || "Upcoming Event",
+          latestEventJoined,
+        });
+      } catch (error) {
+        res.status(500).send({
+          message: "Failed to load homepage stats",
+          error: error.message,
+        });
+      }
+    });
     // Change the path order to match what your frontend is calling
     app.get("/users/role/:email", async (req, res) => {
       const email = req.params.email;
@@ -394,8 +476,15 @@ async function run() {
       }
     });
 
+    app.delete("/club-managers/:id", verifyFBToken, async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = await clubManagersCollection.deleteOne(query);
+      res.send(result);
+    });
+
     // Delete a club by ID
-    app.delete("/clubs/:id", async (req, res) => {
+    app.delete("/clubs/:id", verifyFBToken, async (req, res) => {
       try {
         const { id } = req.params;
 
@@ -437,7 +526,7 @@ async function run() {
       res.send(result);
     });
 
-    app.get("/events", verifyFBToken, async (req, res) => {
+    app.get("/events", async (req, res) => {
       const { clubId } = req.query;
 
       let query = {};
@@ -460,6 +549,29 @@ async function run() {
         });
       }
     });
+    // app.get("/events", async (req, res) => {
+    //   const { clubId } = req.query;
+
+    //   let query = {};
+
+    //   if (clubId) {
+    //     query = { clubId };
+    //   }
+
+    //   try {
+    //     const result = await eventsCollection
+    //       .find(query)
+    //       .sort({ eventDate: 1 })
+    //       .toArray();
+
+    //     res.send(result);
+    //   } catch (error) {
+    //     res.status(500).send({
+    //       message: "Failed to fetch events",
+    //       error: error.message,
+    //     });
+    //   }
+    // });
 
     // Add this in server.js under the events section
     app.put("/events/:id", verifyFBToken, async (req, res) => {
