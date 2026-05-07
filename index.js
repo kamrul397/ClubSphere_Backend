@@ -7,7 +7,7 @@ const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const port = process.env.PORT || 3000;
 const admin = require("firebase-admin");
 
-const serviceAccount = require(process.env.GOOGLE_CLOUD_SERVICE_ACCOUNT);
+const serviceAccount = require("./clubspere_admin_sdk.json");
 
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
@@ -1510,10 +1510,10 @@ async function run() {
     });
 
     // Send a ping to confirm a successful connection
-    await client.db("admin").command({ ping: 1 });
-    console.log(
-      "Pinged your deployment. You successfully connected to MongoDB!",
-    );
+    // await client.db("admin").command({ ping: 1 });
+    // console.log(
+    //   "Pinged your deployment. You successfully connected to MongoDB!",
+    // );
   } finally {
     // Ensures that the client will close when you finish/error
     // await client.close();
