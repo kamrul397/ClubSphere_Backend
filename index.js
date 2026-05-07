@@ -7,7 +7,7 @@ const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const port = process.env.PORT || 3000;
 const admin = require("firebase-admin");
 
-const serviceAccount = require("./clubspere_admin_sdk.json");
+const serviceAccount = require(process.env.GOOGLE_CLOUD_SERVICE_ACCOUNT);
 
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
