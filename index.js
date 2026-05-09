@@ -1527,6 +1527,18 @@ async function run() {
     // await client.close();
   }
 }
+app.get("/db-health", async (req, res) => {
+  try {
+    await client.db("admin").command({ ping: 1 });
+    res.send({ server: "ok", database: "connected" });
+  } catch (error) {
+    res.status(500).send({
+      server: "ok",
+      database: "failed",
+      error: error.message,
+    });
+  }
+});
 run().catch(console.dir);
 
 app.get("/", (req, res) => {
