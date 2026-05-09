@@ -84,6 +84,18 @@ const client = new MongoClient(uri, {
   },
 });
 
+let db;
+
+async function connectDB() {
+  if (db) return db;
+
+  await client.connect();
+  db = client.db("clubSpere_Database");
+
+  console.log("MongoDB connected successfully");
+  return db;
+}
+
 async function run() {
   try {
     // Connect the client to the server	(optional starting in v4.7)
@@ -1529,8 +1541,13 @@ async function run() {
 }
 app.get("/db-health", async (req, res) => {
   try {
-    await client.db("admin").command({ ping: 1 });
-    res.send({ server: "ok", database: "connected" });
+    const database = await connectDB();
+    await database.command({ ping: 1 });
+
+    res.send({
+      server: "ok",
+      database: "connected",
+    });
   } catch (error) {
     res.status(500).send({
       server: "ok",
