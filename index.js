@@ -1098,15 +1098,37 @@ async function run() {
     // Public endpoint for fetching approved clubs without authentication
     app.get("/clubs/approved", async (req, res) => {
       try {
-        // Fetch only approved clubs for public access
+        const { email } = req.query;
+
+        let query = { status: "approved" };
+
+        if (email) {
+          const joinedClubs = await clubMembersCollection
+            .find({ userEmail: email })
+            .project({ clubId: 1 })
+            .toArray();
+
+          const joinedIds = joinedClubs
+            .filter((c) => ObjectId.isValid(c.clubId))
+            .map((c) => new ObjectId(c.clubId));
+
+          if (joinedIds.length > 0) {
+            query._id = { $nin: joinedIds };
+          }
+        }
+
         const result = await clubsCollection
-          .find({ status: "approved" })
+          .find(query)
           .sort({ createdAt: -1 })
           .toArray();
+
         res.send(result);
       } catch (error) {
         console.error("Error fetching approved clubs:", error);
-        res.status(500).send({ message: "Error fetching approved clubs" });
+        res.status(500).send({
+          message: "Error fetching approved clubs",
+          error: error.message,
+        });
       }
     });
 
@@ -1147,30 +1169,7 @@ async function run() {
 
       res.send(result);
     });
-    // Get only approved clubs that the user has NOT joined yet
-    app.get("/clubs/approved", verifyFBToken, async (req, res) => {
-      const { email } = req.query;
-      let query = { status: "approved" };
 
-      if (email) {
-        // 1. Find all club IDs the user has already joined
-        const joinedClubs = await clubMembersCollection
-          .find({ userEmail: email })
-          .project({ clubId: 1 })
-          .toArray();
-
-        // 2. Extract IDs into an array
-        const joinedIds = joinedClubs.map((c) => new ObjectId(c.clubId));
-
-        // 3. Filter the query to exclude these IDs
-        if (joinedIds.length > 0) {
-          query._id = { $nin: joinedIds };
-        }
-      }
-
-      const result = await clubsCollection.find(query).toArray();
-      res.send(result);
-    });
     // Get a single club by ID
     app.get("/clubs/:id", async (req, res) => {
       const id = req.params.id;
@@ -1596,12 +1595,8 @@ run().catch((error) => {
   console.error("Route setup failed:", error);
 });
 
-// For local development only
-if (!process.env.VERCEL) {
-  app.listen(port, () => {
-    console.log(`Example app listening on port ${port}`);
-  });
-}
-
+app.listen(port, () => {
+  console.log(`Server is running on port ${port}`);
+});
 // For Vercel
 module.exports = app;
