@@ -129,7 +129,7 @@ async function connectDB() {
 async function run() {
   try {
     // Connect the client to the server	(optional starting in v4.7)
-    const db = await connectDB();
+    const db = client.db("clubSpere_Database");
     const clubsCollection = db.collection("clubs");
     const usersCollection = db.collection("users");
     const clubManagersCollection = db.collection("clubManagers");
