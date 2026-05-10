@@ -106,6 +106,9 @@ const client = new MongoClient(uri, {
     strict: true,
     deprecationErrors: true,
   },
+  maxPoolSize: 10,
+  serverSelectionTimeoutMS: 5000,
+  connectTimeoutMS: 10000,
 });
 
 let db;
@@ -1558,10 +1561,10 @@ async function run() {
     });
 
     // Send a ping to confirm a successful connection
-    await client.db("admin").command({ ping: 1 });
-    console.log(
-      "Pinged your deployment. You successfully connected to MongoDB!",
-    );
+    // await client.db("admin").command({ ping: 1 });
+    // console.log(
+    //   "Pinged your deployment. You successfully connected to MongoDB!",
+    // );
   } finally {
     // Ensures that the client will close when you finish/error
     // await client.close();
@@ -1570,6 +1573,7 @@ async function run() {
 app.get("/", (req, res) => {
   res.send("Server is running!");
 });
+
 app.get("/db-health", async (req, res) => {
   try {
     const database = await connectDB();
@@ -1587,8 +1591,17 @@ app.get("/db-health", async (req, res) => {
     });
   }
 });
-run().catch(console.dir);
 
-app.listen(port, () => {
-  console.log(`Example app listening on port ${port}`);
+run().catch((error) => {
+  console.error("Route setup failed:", error);
 });
+
+// For local development only
+if (!process.env.VERCEL) {
+  app.listen(port, () => {
+    console.log(`Example app listening on port ${port}`);
+  });
+}
+
+// For Vercel
+module.exports = app;
