@@ -109,23 +109,27 @@ const client = new MongoClient(uri, {
 });
 
 let db;
+let clientPromise;
 
 async function connectDB() {
   if (db) return db;
 
-  await client.connect();
-  db = client.db("clubSpere_Database");
+  if (!clientPromise) {
+    clientPromise = client.connect();
+  }
 
+  await clientPromise;
+
+  db = client.db("clubSpere_Database");
   console.log("MongoDB connected successfully");
+
   return db;
 }
 
 async function run() {
   try {
     // Connect the client to the server	(optional starting in v4.7)
-    await client.connect();
-
-    const db = client.db("clubSpere_Database");
+    const db = await connectDB();
     const clubsCollection = db.collection("clubs");
     const usersCollection = db.collection("users");
     const clubManagersCollection = db.collection("clubManagers");
@@ -1563,6 +1567,9 @@ async function run() {
     // await client.close();
   }
 }
+app.get("/", (req, res) => {
+  res.send("Server is running!");
+});
 app.get("/db-health", async (req, res) => {
   try {
     const database = await connectDB();
@@ -1581,10 +1588,6 @@ app.get("/db-health", async (req, res) => {
   }
 });
 run().catch(console.dir);
-
-app.get("/", (req, res) => {
-  res.send("Server is running!");
-});
 
 app.listen(port, () => {
   console.log(`Example app listening on port ${port}`);
